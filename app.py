@@ -3,8 +3,6 @@ from openai import OpenAI
 import time
 import base64
 import uuid
-import sqlite3
-import datetime
 
 st.set_page_config(page_title="Multi-Agent Hub", page_icon="⚡", layout="wide")
 
@@ -14,77 +12,6 @@ client = OpenAI(
     api_key="unused", 
     max_retries=0 
 )
-
-# --- DATABASE SETUP ---
-@st.cache_resource
-def get_db_connection():
-    conn = sqlite3.connect("chat_history.db", check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS chats (
-            id TEXT PRIMARY KEY,
-            title TEXT,
-            created_at TIMESTAMP
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id TEXT,
-            role TEXT,
-            content TEXT,
-            image_base64 TEXT,
-            FOREIGN KEY(chat_id) REFERENCES chats(id)
-        )
-    """)
-    conn.commit()
-    return conn
-
-conn = get_db_connection()
-
-# --- HELPER DATABASE FUNCTIONS ---
-def create_new_chat():
-    chat_id = str(uuid.uuid4())
-    now = datetime.datetime.now()
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO chats (id, title, created_at) VALUES (?, ?, ?)", (chat_id, "New Chat", now))
-    conn.commit()
-    return chat_id
-
-def get_all_chats():
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, title FROM chats ORDER BY created_at DESC")
-    return cursor.fetchall()
-
-def get_messages(chat_id):
-    cursor = conn.cursor()
-    cursor.execute("SELECT role, content, image_base64 FROM messages WHERE chat_id = ? ORDER BY id ASC", (chat_id,))
-    rows = cursor.fetchall()
-    messages = []
-    for row in rows:
-        role, content, img = row
-        msg_content = [{"type": "text", "text": content}]
-        if img:
-            msg_content.append({"type": "image_url", "image_url": {"url": img}})
-        messages.append({"role": role, "content": msg_content})
-    return messages
-
-def save_message(chat_id, role, text, image_base64=None):
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO messages (chat_id, role, content, image_base64) VALUES (?, ?, ?, ?)", 
-                   (chat_id, role, text, image_base64))
-    conn.commit()
-
-def update_chat_title(chat_id, new_title):
-    cursor = conn.cursor()
-    cursor.execute("UPDATE chats SET title = ? WHERE id = ?", (new_title, chat_id))
-    conn.commit()
-
-def delete_chat(chat_id):
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
-    cursor.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
-    conn.commit()
 
 def stream_ai_response(system_prompt, message_history, model_name):
     max_attempts = 3
@@ -107,7 +34,7 @@ def stream_ai_response(system_prompt, message_history, model_name):
             else:
                 yield f"\n\n**Final Error:** {e}"
 
-# --- Model labels (The Cloudflare Worker handles the actual model routing) ---
+# --- Model labels ---
 models = {
     "Auto-Route (Fast)": "auto",
     "Auto-Route (Strong)": "auto"
@@ -119,40 +46,48 @@ mode = st.sidebar.radio("Choose your mode:", ("Normal Chat", "Pipeline", "Conver
 st.sidebar.markdown("---")
 
 # ==========================================
-# MODE 1: NORMAL CHAT
+# MODE 1: NORMAL CHAT (Session-Only Privacy)
 # ==========================================
 if mode == "Normal Chat":
     st.title("💬 Normal Chat")
     
-    st.sidebar.subheader("Chat History")
-    
-    if st.sidebar.button("➕ New Chat", use_container_width=True):
-        new_id = create_new_chat()
+    # Initialize private session chat history
+    if "chats" not in st.session_state:
+        st.session_state.chats = {}
+        new_id = str(uuid.uuid4())
+        st.session_state.chats[new_id] = {"title": "New Chat", "messages": []}
         st.session_state.current_chat_id = new_id
-        st.rerun()
-
-    past_chats = get_all_chats()
-    
-    if not past_chats:
-        new_id = create_new_chat()
-        st.session_state.current_chat_id = new_id
-        st.rerun()
         
     if "current_chat_id" not in st.session_state:
-        st.session_state.current_chat_id = past_chats[0][0]
+        st.session_state.current_chat_id = list(st.session_state.chats.keys())[0]
 
-    for chat_id, title in past_chats:
+    st.sidebar.subheader("Chat History")
+    
+    # New Chat Button
+    if st.sidebar.button("➕ New Chat", use_container_width=True):
+        new_id = str(uuid.uuid4())
+        st.session_state.chats[new_id] = {"title": "New Chat", "messages": []}
+        st.session_state.current_chat_id = new_id
+        st.rerun()
+
+    # Display past chats
+    for chat_id, chat_data in list(st.session_state.chats.items()):
         col1, col2 = st.sidebar.columns([0.8, 0.2])
         with col1:
             btn_type = "primary" if chat_id == st.session_state.current_chat_id else "secondary"
-            if st.button(title, key=f"chat_{chat_id}", use_container_width=True, type=btn_type):
+            if st.button(chat_data["title"], key=f"chat_{chat_id}", use_container_width=True, type=btn_type):
                 st.session_state.current_chat_id = chat_id
                 st.rerun()
         with col2:
             if st.button("🗑️", key=f"del_{chat_id}", use_container_width=True):
-                delete_chat(chat_id)
+                del st.session_state.chats[chat_id]
                 if st.session_state.current_chat_id == chat_id:
-                    del st.session_state.current_chat_id
+                    if st.session_state.chats:
+                        st.session_state.current_chat_id = list(st.session_state.chats.keys())[0]
+                    else:
+                        new_id = str(uuid.uuid4())
+                        st.session_state.chats[new_id] = {"title": "New Chat", "messages": []}
+                        st.session_state.current_chat_id = new_id
                 st.rerun()
 
     st.sidebar.markdown("---")
@@ -160,9 +95,10 @@ if mode == "Normal Chat":
     system_prompt = st.sidebar.text_area("System Prompt:", "You are a helpful assistant.")
     selected_model_name = st.sidebar.selectbox("Select Model:", list(models.keys()))
 
-    current_messages = get_messages(st.session_state.current_chat_id)
+    current_chat = st.session_state.chats[st.session_state.current_chat_id]
 
-    for message in current_messages:
+    # Display chat history
+    for message in current_chat["messages"]:
         with st.chat_message(message["role"]):
             if isinstance(message["content"], list):
                 for item in message["content"]:
@@ -173,36 +109,37 @@ if mode == "Normal Chat":
             else:
                 st.markdown(message["content"])
 
+    # Chat Input
     if prompt := st.chat_input("Type your message here, or paste an image...", accept_file=True, file_type=["png", "jpg", "jpeg"]):
-        
         user_text = prompt.text
         user_files = prompt.files
-        
         image_base64_data = None
+        
         if user_files:
             uploaded_file = user_files[0]
             base64_image = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
             image_base64_data = f"data:{uploaded_file.type};base64,{base64_image}"
-            
             with st.chat_message("user"):
                 st.image(uploaded_file)
-                if user_text:
-                    st.markdown(user_text)
+                if user_text: st.markdown(user_text)
         else:
             with st.chat_message("user"):
                 st.markdown(user_text)
 
-        save_message(st.session_state.current_chat_id, "user", user_text, image_base64_data)
+        user_content = [{"type": "text", "text": user_text if user_text else "Analyze this."}]
+        if image_base64_data:
+            user_content.append({"type": "image_url", "image_url": {"url": image_base64_data}})
+
+        current_chat["messages"].append({"role": "user", "content": user_content})
         
-        if current_messages == [] and user_text:
+        if current_chat["title"] == "New Chat" and user_text:
             new_title = user_text[:25] + "..." if len(user_text) > 25 else user_text
-            update_chat_title(st.session_state.current_chat_id, new_title)
+            current_chat["title"] = new_title
 
         with st.chat_message("assistant"):
             text_ph = st.empty()
             full_response = ""
-            
-            response_stream = stream_ai_response(system_prompt, current_messages + [{"role": "user", "content": [{"type": "text", "text": user_text if user_text else "Analyze this."}, {"type": "image_url", "image_url": {"url": image_base64_data}}] if image_base64_data else user_text}], models[selected_model_name])
+            response_stream = stream_ai_response(system_prompt, current_chat["messages"], models[selected_model_name])
             
             for chunk in response_stream:
                 full_response += chunk
@@ -210,14 +147,11 @@ if mode == "Normal Chat":
             
             if "Final Error" in full_response:
                 if st.button("Try Again"):
-                    cursor = conn.cursor()
-                    cursor.execute("DELETE FROM messages WHERE chat_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1", (st.session_state.current_chat_id,))
-                    conn.commit()
+                    current_chat["messages"].pop()
                     st.rerun()
             else:
-                save_message(st.session_state.current_chat_id, "assistant", full_response)
+                current_chat["messages"].append({"role": "assistant", "content": full_response})
                 st.rerun()
-
 
 # ==========================================
 # MODE 2: PIPELINE
