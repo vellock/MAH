@@ -12,6 +12,9 @@ hide_st_style = """
             header {visibility: hidden;}
             footer {visibility: hidden;}
             .stAppDeployButton {display: none;}
+            [data-testid="manage-app-button"] {display: none !important;}
+            [data-testid="stStatusWidget"] {visibility: hidden;}
+            iframe[title="Manage app"] {display: none !important;}
             </style>
             """
 st.markdown(hide_st_style, unsafe_allow_html=True)
