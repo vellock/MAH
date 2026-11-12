@@ -5,7 +5,16 @@ import base64
 import uuid
 
 st.set_page_config(page_title="Multi-Agent Hub", page_icon="⚡", layout="wide")
-
+# --- HIDE STREAMLIT UI ELEMENTS ---
+hide_st_style = """
+            <style>
+            #MainMenu {visibility: hidden;}
+            header {visibility: hidden;}
+            footer {visibility: hidden;}
+            .stAppDeployButton {display: none;}
+            </style>
+            """
+st.markdown(hide_st_style, unsafe_allow_html=True)
 # --- SETUP CLIENT (Pointing to Cloudflare Worker) ---
 client = OpenAI(
     base_url="https://nvidia-proxy.vellock.workers.dev/v1", 
